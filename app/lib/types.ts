@@ -18,3 +18,15 @@ export interface IngestionData {
   readme: string;
   fileTree: IngestionFileTreeEntry[];
 }
+
+export interface Lesson {
+  title: string;
+  explanation: string;
+  mermaidDiagram: string;
+  codeSnippet: string | null;
+  language: string | null;
+  quiz: {
+    question: string;
+    expectedConcept: string;
+  };
+}
