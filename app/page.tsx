@@ -1,12 +1,18 @@
 "use client";
 
 import { FormEvent, useState } from "react";
+import { useRouter } from "next/navigation";
+
+import { useAtlasStore } from "@/app/lib/store";
+import { IngestionData } from "@/app/lib/types";
 
 const GITHUB_REPO_URL_PATTERN =
   /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/?$/;
 const DEMO_REPO_URL = "https://github.com/karpathy/nanoGPT";
 
 export default function Home() {
+  const router = useRouter();
+  const setIngestionData = useAtlasStore((state) => state.setIngestionData);
   const [repoUrl, setRepoUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -23,9 +29,26 @@ export default function Home() {
     setError(null);
 
     try {
-      // TODO(step-3): replace setTimeout with real fetch('/api/analyze') and route to /learn
-      await new Promise((resolve) => window.setTimeout(resolve, 1000));
-      console.log("Analyzing repository:", trimmedUrl);
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ repoUrl: trimmedUrl }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        const errorData = data as { error?: string };
+        setError(errorData.error || "Failed to analyze repository");
+        return;
+      }
+
+      setIngestionData(data as IngestionData);
+      router.push("/learn");
+    } catch {
+      setError("Network error. Please try again.");
     } finally {
       setIsLoading(false);
     }
