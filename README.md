@@ -2,22 +2,40 @@
 
 Atlas is an agentic learning tool for the OpenAI x Handshake Codex Creator Challenge.
 
-This repository currently contains the Phase 0 deployable baseline:
+Live demo: [https://atlas-two-bice.vercel.app](https://atlas-two-bice.vercel.app)
+
+This repository currently contains the Phase 0 deployable baseline and the first round of integration setup:
 
 - Next.js 14 App Router with TypeScript
 - Tailwind CSS
 - Dark-only placeholder landing page
 - Local build verified with `npm run build`
+- `octokit`, `openai`, and `mermaid` installed for the next build steps
 
-## Getting Started
+## Setup
 
-Install dependencies:
+1. Install dependencies:
 
 ```bash
 npm install
 ```
 
-Run the development server:
+2. Create a local environment file:
+
+```bash
+cp .env.example .env.local
+```
+
+3. Fill in these required variables:
+
+- `OPENAI_API_KEY`
+  Create it from [platform.openai.com](https://platform.openai.com/).
+- `GITHUB_TOKEN`
+  Create a classic GitHub personal access token with `public_repo` scope.
+
+`.env.local` is already gitignored and should not be committed.
+
+4. Run the development server:
 
 ```bash
 npm run dev
@@ -34,6 +52,10 @@ npm run start
 npm run lint
 ```
 
-## Current Status
+## Status
 
-This is the initial GitHub baseline before the full Atlas learning flow is added.
+- Live Vercel deployment is active at [atlas-two-bice.vercel.app](https://atlas-two-bice.vercel.app)
+- Homepage placeholder is deployed and auto-deploys from `main`
+- OpenAI, GitHub, and Mermaid dependencies are installed
+- `.env.example` is present and local env handling is documented
+- End-to-end repo ingestion and lesson generation are not implemented yet
