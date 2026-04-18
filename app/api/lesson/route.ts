@@ -6,6 +6,8 @@ import { IngestionData, Lesson } from "@/app/lib/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
+const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
+const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
 
 const FALLBACK_MERMAID_DIAGRAM = `graph TD
   A[Repository] --> B[Core Module]
@@ -75,13 +77,13 @@ function isValidLessonShape(value: unknown): value is Lesson {
   );
 }
 
-async function requestLessonFromOpenAI(
-  openai: OpenAI,
+async function requestLessonFromGroq(
+  groq: OpenAI,
   userPrompt: string,
   extraSystemMessages: string[] = []
 ) {
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o",
+  const response = await groq.chat.completions.create({
+    model: process.env.GROQ_MODEL ?? DEFAULT_GROQ_MODEL,
     response_format: { type: "json_object" },
     temperature: 0.7,
     max_tokens: 2000,
@@ -99,15 +101,15 @@ async function requestLessonFromOpenAI(
 }
 
 async function generateLesson(
-  openai: OpenAI,
+  groq: OpenAI,
   userPrompt: string
 ): Promise<Lesson> {
   let extraSystemMessages: string[] = [];
   let lastValidLesson: Lesson | null = null;
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const raw = await requestLessonFromOpenAI(
-      openai,
+    const raw = await requestLessonFromGroq(
+      groq,
       userPrompt,
       extraSystemMessages
     );
@@ -120,7 +122,7 @@ async function generateLesson(
         continue;
       }
 
-      throw new Error("Empty lesson response from OpenAI");
+      throw new Error("Empty lesson response from Groq");
     }
 
     let parsedLesson: unknown;
@@ -198,8 +200,8 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (!process.env.OPENAI_API_KEY) {
-    console.error("[lesson] OPENAI_API_KEY not set");
+  if (!process.env.GROQ_API_KEY) {
+    console.error("[lesson] GROQ_API_KEY not set");
 
     return NextResponse.json(
       { error: "Failed to generate lesson. Please try again." },
@@ -207,15 +209,18 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const groq = new OpenAI({
+    apiKey: process.env.GROQ_API_KEY,
+    baseURL: GROQ_BASE_URL,
+  });
   const userPrompt = buildUserPrompt(body as IngestionData);
 
   try {
-    const lesson = await generateLesson(openai, userPrompt);
+    const lesson = await generateLesson(groq, userPrompt);
 
     return NextResponse.json(lesson);
   } catch (error) {
-    console.error("[lesson] OpenAI error:", error);
+    console.error("[lesson] Groq error:", error);
 
     return NextResponse.json(
       { error: "Failed to generate lesson. Please try again." },

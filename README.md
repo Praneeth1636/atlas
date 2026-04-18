@@ -10,7 +10,7 @@ This repository currently contains the Phase 0 deployable baseline and the first
 - Tailwind CSS
 - Dark-only placeholder landing page
 - Local build verified with `npm run build`
-- `octokit`, `openai`, and `mermaid` installed for the next build steps
+- `octokit`, `openai` (configured for Groq), and `mermaid` installed for the next build steps
 
 ## Setup
 
@@ -28,8 +28,10 @@ cp .env.example .env.local
 
 3. Fill in these required variables:
 
-- `OPENAI_API_KEY`
-  Create it from [platform.openai.com](https://platform.openai.com/).
+- `GROQ_API_KEY`
+  Create it from [console.groq.com/keys](https://console.groq.com/keys).
+- `GROQ_MODEL` (optional)
+  Defaults to `llama-3.3-70b-versatile`.
 - `GITHUB_TOKEN`
   Create a classic GitHub personal access token with `public_repo` scope.
 
@@ -56,6 +58,6 @@ npm run lint
 
 - Live Vercel deployment is active at [atlas-two-bice.vercel.app](https://atlas-two-bice.vercel.app)
 - Homepage placeholder is deployed and auto-deploys from `main`
-- OpenAI, GitHub, and Mermaid dependencies are installed
+- Groq, GitHub, and Mermaid dependencies are installed
 - `.env.example` is present and local env handling is documented
 - End-to-end repo ingestion and lesson generation are not implemented yet
