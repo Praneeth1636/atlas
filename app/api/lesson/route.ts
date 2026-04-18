@@ -8,6 +8,7 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
 const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
+const DEFAULT_OPENAI_MODEL = "gpt-4o";
 
 const FALLBACK_MERMAID_DIAGRAM = `graph TD
   A[Repository] --> B[Core Module]
@@ -80,10 +81,11 @@ function isValidLessonShape(value: unknown): value is Lesson {
 async function requestLessonFromGroq(
   groq: OpenAI,
   userPrompt: string,
-  extraSystemMessages: string[] = []
+  extraSystemMessages: string[] = [],
+  model: string
 ) {
   const response = await groq.chat.completions.create({
-    model: process.env.GROQ_MODEL ?? DEFAULT_GROQ_MODEL,
+    model,
     response_format: { type: "json_object" },
     temperature: 0.7,
     max_tokens: 2000,
@@ -102,7 +104,8 @@ async function requestLessonFromGroq(
 
 async function generateLesson(
   groq: OpenAI,
-  userPrompt: string
+  userPrompt: string,
+  model: string
 ): Promise<Lesson> {
   let extraSystemMessages: string[] = [];
   let lastValidLesson: Lesson | null = null;
@@ -111,7 +114,8 @@ async function generateLesson(
     const raw = await requestLessonFromGroq(
       groq,
       userPrompt,
-      extraSystemMessages
+      extraSystemMessages,
+      model
     );
 
     if (!raw) {
@@ -200,8 +204,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (!process.env.GROQ_API_KEY) {
-    console.error("[lesson] GROQ_API_KEY not set");
+  const groqApiKey = process.env.GROQ_API_KEY;
+  const openAiApiKey = process.env.OPENAI_API_KEY;
+
+  if (!groqApiKey && !openAiApiKey) {
+    console.error("[lesson] GROQ_API_KEY or OPENAI_API_KEY not set");
 
     return NextResponse.json(
       { error: "Failed to generate lesson. Please try again." },
@@ -209,14 +216,19 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const groq = new OpenAI({
-    apiKey: process.env.GROQ_API_KEY,
-    baseURL: GROQ_BASE_URL,
-  });
+  const groq = groqApiKey
+    ? new OpenAI({
+        apiKey: groqApiKey,
+        baseURL: GROQ_BASE_URL,
+      })
+    : new OpenAI({ apiKey: openAiApiKey });
+  const model = groqApiKey
+    ? process.env.GROQ_MODEL ?? DEFAULT_GROQ_MODEL
+    : process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL;
   const userPrompt = buildUserPrompt(body as IngestionData);
 
   try {
-    const lesson = await generateLesson(groq, userPrompt);
+    const lesson = await generateLesson(groq, userPrompt, model);
 
     return NextResponse.json(lesson);
   } catch (error) {
