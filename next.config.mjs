@@ -1,4 +1,12 @@
 /** @type {import('next').NextConfig} */
-const nextConfig = {};
+const nextConfig = {
+  experimental: {
+    serverComponentsExternalPackages: [
+      "@napi-rs/canvas",
+      "pdf-parse",
+      "pdfjs-dist",
+    ],
+  },
+};
 
 export default nextConfig;

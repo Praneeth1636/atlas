@@ -2,30 +2,104 @@ import OpenAI from "openai";
 import { NextRequest, NextResponse } from "next/server";
 
 import { LESSON_SYSTEM_PROMPT } from "@/app/lib/prompts";
-import { IngestionData, Lesson } from "@/app/lib/types";
+import type { IngestionData, Lesson } from "@/app/lib/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
+
 const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
 const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
 const DEFAULT_OPENAI_MODEL = "gpt-4o";
+const VALID_DIAGRAM_TYPES = new Set([
+  "flowchart",
+  "sequence",
+  "class",
+  "gantt",
+  "timeline",
+  "mindmap",
+  "state",
+  "er",
+  "graph",
+] as const);
+const VALID_CALLOUT_VARIANTS = new Set([
+  "info",
+  "tip",
+  "warning",
+  "key",
+] as const);
+const MERMAID_PREFIXES = [
+  "graph ",
+  "flowchart ",
+  "sequenceDiagram",
+  "classDiagram",
+  "gantt",
+  "timeline",
+  "stateDiagram",
+  "mindmap",
+  "erDiagram",
+];
 
-const FALLBACK_MERMAID_DIAGRAM = `graph TD
-  A[Repository] --> B[Core Module]
-  B --> C[Implementation]
-  C --> D[Output]`;
-
-function isMissingIngestionField(body: Partial<IngestionData> | null) {
-  return !body || !body.metadata || body.readme === undefined || !body.fileTree;
+function createFallbackLesson(): Lesson {
+  return {
+    title: "Overview",
+    subtitle: "A quick introduction to this source.",
+    blocks: [
+      {
+        type: "text",
+        body: "We had trouble generating a detailed lesson. Here's a minimal overview — please try again.",
+      },
+      {
+        type: "diagram",
+        diagramType: "flowchart",
+        title: "Concept flow",
+        mermaid:
+          "graph TD\n  A[Source] --> B[Analysis]\n  B --> C[Key Concept]\n  C --> D[Applied Understanding]",
+      },
+    ],
+    quiz: {
+      question: "What is the main idea of this source?",
+      expectedConcept: "Core concept identification",
+    },
+  };
 }
 
-function buildUserPrompt({ metadata, readme, fileTree }: IngestionData) {
-  return `Repository: ${metadata.fullName}
+function isMissingIngestionField(body: Partial<IngestionData> | null) {
+  return (
+    !body ||
+    (body.sourceType !== "github" && body.sourceType !== "pdf") ||
+    typeof body.sourceRef !== "string" ||
+    !body.metadata ||
+    body.readme === undefined ||
+    !Array.isArray(body.fileTree)
+  );
+}
+
+function buildUserPrompt({
+  sourceType,
+  sourceRef,
+  metadata,
+  readme,
+  fileTree,
+}: IngestionData) {
+  if (sourceType === "pdf") {
+    return `Source type: PDF
+Source ref: ${sourceRef}
+Title: ${metadata.fullName}
+Description: ${metadata.description ?? "(none)"}
+Pages: ${metadata.pageCount ?? "(unknown)"}
+
+Extracted text (truncated):
+${readme.slice(0, 8000)}`;
+  }
+
+  return `Source type: GitHub repository
+Source ref: ${sourceRef}
+Repository: ${metadata.fullName}
 Description: ${metadata.description ?? "(none)"}
 Language: ${metadata.language ?? "(mixed)"}
 
 README (truncated):
-${readme.slice(0, 4000)}
+${readme.slice(0, 6000)}
 
 Top-level file tree:
 ${fileTree
@@ -33,49 +107,184 @@ ${fileTree
   .join("\n")}`;
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function countChar(text: string, char: string) {
+  return text.split(char).length - 1;
+}
+
 function hasBalancedBrackets(chart: string) {
-  return (chart.match(/\[/g) || []).length === (chart.match(/\]/g) || []).length;
+  return (
+    countChar(chart, "[") === countChar(chart, "]") &&
+    countChar(chart, "(") === countChar(chart, ")") &&
+    countChar(chart, "{") === countChar(chart, "}")
+  );
 }
 
 function isValidMermaid(chart: unknown) {
-  if (typeof chart !== "string") {
+  if (!isNonEmptyString(chart)) {
     return false;
   }
 
   const trimmedChart = chart.trim();
 
-  if (
-    !trimmedChart.startsWith("graph ") &&
-    !trimmedChart.startsWith("flowchart ")
-  ) {
+  if (!MERMAID_PREFIXES.some((prefix) => trimmedChart.startsWith(prefix))) {
     return false;
   }
 
   return hasBalancedBrackets(trimmedChart);
 }
 
-function isNonEmptyString(value: unknown) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
-function isValidLessonShape(value: unknown): value is Lesson {
-  if (!value || typeof value !== "object") {
-    return false;
+function validateBlock(block: unknown) {
+  if (!isObject(block) || typeof block.type !== "string") {
+    return "Each block must be an object with a valid type.";
   }
 
-  const lesson = value as Lesson;
+  switch (block.type) {
+    case "text":
+      return isNonEmptyString(block.body)
+        ? null
+        : "Text blocks require a non-empty body.";
+    case "diagram":
+      if (!VALID_DIAGRAM_TYPES.has(block.diagramType as never)) {
+        return "Diagram blocks require a valid diagramType.";
+      }
 
-  return (
-    isNonEmptyString(lesson.title) &&
-    isNonEmptyString(lesson.explanation) &&
-    isNonEmptyString(lesson.mermaidDiagram) &&
-    typeof lesson.quiz === "object" &&
-    lesson.quiz !== null &&
-    isNonEmptyString(lesson.quiz.question) &&
-    isNonEmptyString(lesson.quiz.expectedConcept) &&
-    (lesson.codeSnippet === null || typeof lesson.codeSnippet === "string") &&
-    (lesson.language === null || typeof lesson.language === "string")
-  );
+      if (block.title !== undefined && typeof block.title !== "string") {
+        return "Diagram block titles must be strings when provided.";
+      }
+
+      return isValidMermaid(block.mermaid)
+        ? null
+        : "Diagram blocks require valid Mermaid syntax.";
+    case "table":
+      if (!Array.isArray(block.headers) || !Array.isArray(block.rows)) {
+        return "Table blocks require non-empty headers and rows.";
+      }
+
+      const headers = block.headers;
+      const rows = block.rows;
+
+      if (
+        block.title !== undefined &&
+        typeof block.title !== "string"
+      ) {
+        return "Table block titles must be strings when provided.";
+      }
+
+      if (
+        headers.length === 0 ||
+        headers.some((header) => !isNonEmptyString(header))
+      ) {
+        return "Table blocks require non-empty headers.";
+      }
+
+      if (
+        rows.length === 0 ||
+        rows.some(
+          (row) =>
+            !Array.isArray(row) ||
+            row.length !== headers.length ||
+            row.some((cell) => typeof cell !== "string")
+        )
+      ) {
+        return "Table blocks require rows that match the header count.";
+      }
+
+      return null;
+    case "callout":
+      if (!VALID_CALLOUT_VARIANTS.has(block.variant as never)) {
+        return "Callout blocks require a valid variant.";
+      }
+
+      if (block.title !== undefined && typeof block.title !== "string") {
+        return "Callout block titles must be strings when provided.";
+      }
+
+      return isNonEmptyString(block.body)
+        ? null
+        : "Callout blocks require a non-empty body.";
+    case "code":
+      if (!isNonEmptyString(block.language) || !isNonEmptyString(block.code)) {
+        return "Code blocks require language and code strings.";
+      }
+
+      if (block.caption !== undefined && typeof block.caption !== "string") {
+        return "Code block captions must be strings when provided.";
+      }
+
+      return null;
+    default:
+      return "Unsupported block type.";
+  }
+}
+
+function validateLessonShape(value: unknown): { valid: boolean; reason: string } {
+  if (!isObject(value)) {
+    return { valid: false, reason: "Lesson must be an object." };
+  }
+
+  if (!isNonEmptyString(value.title)) {
+    return { valid: false, reason: "Lesson title is required." };
+  }
+
+  if (!isNonEmptyString(value.subtitle)) {
+    return { valid: false, reason: "Lesson subtitle is required." };
+  }
+
+  if (!Array.isArray(value.blocks) || value.blocks.length < 3 || value.blocks.length > 7) {
+    return {
+      valid: false,
+      reason: "Lesson blocks must contain between 3 and 7 items.",
+    };
+  }
+
+  let diagramCount = 0;
+
+  for (let index = 0; index < value.blocks.length; index += 1) {
+    const block = value.blocks[index];
+    const blockError = validateBlock(block);
+
+    if (blockError) {
+      return {
+        valid: false,
+        reason: `Block ${index + 1}: ${blockError}`,
+      };
+    }
+
+    if (isObject(block) && block.type === "diagram") {
+      diagramCount += 1;
+    }
+  }
+
+  if (diagramCount === 0) {
+    return {
+      valid: false,
+      reason: "At least one diagram block is required.",
+    };
+  }
+
+  if (!isObject(value.quiz)) {
+    return { valid: false, reason: "Quiz is required." };
+  }
+
+  if (
+    !isNonEmptyString(value.quiz.question) ||
+    !isNonEmptyString(value.quiz.expectedConcept)
+  ) {
+    return {
+      valid: false,
+      reason: "Quiz question and expectedConcept are required.",
+    };
+  }
+
+  return { valid: true, reason: "" };
 }
 
 async function requestLessonFromGroq(
@@ -88,7 +297,7 @@ async function requestLessonFromGroq(
     model,
     response_format: { type: "json_object" },
     temperature: 0.7,
-    max_tokens: 2000,
+    max_tokens: 2500,
     messages: [
       { role: "system", content: LESSON_SYSTEM_PROMPT },
       ...extraSystemMessages.map((message) => ({
@@ -108,7 +317,7 @@ async function generateLesson(
   model: string
 ): Promise<Lesson> {
   let extraSystemMessages: string[] = [];
-  let lastValidLesson: Lesson | null = null;
+  let lastValidationReason = "";
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const raw = await requestLessonFromGroq(
@@ -119,14 +328,16 @@ async function generateLesson(
     );
 
     if (!raw) {
+      lastValidationReason = "The model returned an empty response.";
+
       if (attempt === 0) {
         extraSystemMessages = [
-          "Your previous response was empty. Return ONLY the JSON object, no prose, no markdown.",
+          "Your previous response was empty. Return ONLY a valid JSON object matching the required lesson schema with 3 to 7 blocks and at least one valid diagram block.",
         ];
         continue;
       }
 
-      throw new Error("Empty lesson response from Groq");
+      break;
     }
 
     let parsedLesson: unknown;
@@ -134,55 +345,41 @@ async function generateLesson(
     try {
       parsedLesson = JSON.parse(raw);
     } catch (error) {
+      lastValidationReason = "The model returned invalid JSON.";
+
       if (attempt === 0) {
         extraSystemMessages = [
-          "Your previous response was invalid JSON. Return ONLY the JSON object, no prose, no markdown.",
+          "Your previous response was invalid JSON. Return ONLY a valid JSON object matching the required lesson schema with 3 to 7 blocks and at least one valid diagram block.",
         ];
         continue;
       }
 
-      throw error;
+      console.error("[lesson] Invalid JSON response:", error);
+      break;
     }
 
-    if (!isValidLessonShape(parsedLesson)) {
-      console.error("[lesson] Missing required lesson fields:", parsedLesson);
+    const validation = validateLessonShape(parsedLesson);
 
-      if (attempt === 0) {
-        extraSystemMessages = [
-          "Your previous response was missing one or more required fields. Return the full JSON object with all required fields populated.",
-        ];
-        continue;
-      }
-
-      throw new Error("Lesson response missing required fields");
+    if (validation.valid) {
+      return parsedLesson as Lesson;
     }
 
-    lastValidLesson = parsedLesson;
-
-    if (isValidMermaid(parsedLesson.mermaidDiagram)) {
-      return parsedLesson;
-    }
+    lastValidationReason = validation.reason;
+    console.error("[lesson] Invalid lesson response:", validation.reason, parsedLesson);
 
     if (attempt === 0) {
       extraSystemMessages = [
-        "Your previous response included an invalid Mermaid diagram. Return the full JSON object again, and ensure mermaidDiagram starts with graph TD or flowchart TD and contains valid Mermaid syntax.",
+        `Your previous response did not match the required lesson schema: ${validation.reason} Return ONLY valid JSON matching the schema exactly. The lesson must contain 3 to 7 blocks and at least one diagram block with valid Mermaid syntax.`,
       ];
       continue;
     }
   }
 
-  if (lastValidLesson) {
-    console.warn(
-      "[lesson] Mermaid validation failed twice, using fallback diagram"
-    );
-
-    return {
-      ...lastValidLesson,
-      mermaidDiagram: FALLBACK_MERMAID_DIAGRAM,
-    };
+  if (lastValidationReason) {
+    console.warn("[lesson] Falling back to safe lesson:", lastValidationReason);
   }
 
-  throw new Error("Failed to generate lesson");
+  return createFallbackLesson();
 }
 
 export async function POST(request: NextRequest) {

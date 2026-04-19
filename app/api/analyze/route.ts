@@ -127,6 +127,8 @@ export async function POST(request: NextRequest) {
       : [];
 
     return NextResponse.json({
+      sourceType: "github",
+      sourceRef: repoUrl,
       metadata: {
         name: metadataResponse.data.name,
         fullName: metadataResponse.data.full_name,

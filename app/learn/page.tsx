@@ -3,16 +3,22 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-import MermaidDiagram from "@/app/components/MermaidDiagram";
+import {
+  CalloutBlock,
+  CodeBlock,
+  DiagramBlock,
+  TableBlock,
+  TextBlock,
+} from "@/app/components/lesson";
 import { normalizeLesson } from "@/app/lib/normalize";
 import { useAtlasStore } from "@/app/lib/store";
-import type { IngestionData, Lesson } from "@/app/lib/types";
+import type { IngestionData, Lesson, LessonBlock } from "@/app/lib/types";
 
 const LOADING_MESSAGES = [
-  "Analyzing the codebase…",
+  "Analyzing the source…",
   "Finding the best starting point…",
   "Generating your first lesson…",
-  "Drawing the architecture…",
+  "Assembling the visual explanation…",
 ];
 
 function AtlasBackground() {
@@ -82,7 +88,7 @@ function LoadingState() {
         </p>
       </div>
       <p className="mt-4 text-sm text-white/60">
-        Atlas is turning the repo into a lesson plan tailored for first contact.
+        Atlas is turning the source into a teachable first lesson.
       </p>
       {showLongWaitNote ? (
         <p className="mt-6 text-sm text-zinc-400">
@@ -130,6 +136,63 @@ function ErrorState({
   );
 }
 
+function BlockRenderer({ block }: { block: LessonBlock }) {
+  switch (block.type) {
+    case "text":
+      return <TextBlock body={block.body} />;
+    case "diagram":
+      return (
+        <DiagramBlock
+          diagramType={block.diagramType}
+          mermaid={block.mermaid}
+          title={block.title}
+        />
+      );
+    case "table":
+      return <TableBlock headers={block.headers} rows={block.rows} title={block.title} />;
+    case "callout":
+      return (
+        <CalloutBlock
+          body={block.body}
+          title={block.title}
+          variant={block.variant}
+        />
+      );
+    case "code":
+      return (
+        <CodeBlock
+          caption={block.caption}
+          code={block.code}
+          language={block.language}
+        />
+      );
+    default:
+      return null;
+  }
+}
+
+function MetadataSummary({ ingestionData }: { ingestionData: IngestionData }) {
+  if (ingestionData.sourceType === "pdf") {
+    if (!ingestionData.metadata.pageCount) {
+      return null;
+    }
+
+    return <span>{ingestionData.metadata.pageCount} pages</span>;
+  }
+
+  return (
+    <>
+      <span className="rounded-full border border-white/10 bg-zinc-950/70 px-3 py-1 text-zinc-200">
+        {ingestionData.metadata.language || "Unknown language"}
+      </span>
+      <span aria-hidden="true" className="text-zinc-600">
+        ·
+      </span>
+      <span>{ingestionData.metadata.stars.toLocaleString()} stars</span>
+    </>
+  );
+}
+
 function LessonLayout({
   ingestionData,
   lesson,
@@ -137,11 +200,6 @@ function LessonLayout({
   ingestionData: IngestionData;
   lesson: Lesson;
 }) {
-  const explanationParagraphs = lesson.explanation
-    .split(/\n\s*\n/)
-    .map((paragraph) => paragraph.trim())
-    .filter(Boolean);
-
   return (
     <main className="relative min-h-screen overflow-hidden">
       <AtlasBackground />
@@ -153,14 +211,20 @@ function LessonLayout({
           >
             Atlas
           </Link>
-          <a
-            className="truncate text-sm text-zinc-300 transition hover:text-white"
-            href={ingestionData.metadata.url}
-            rel="noreferrer"
-            target="_blank"
-          >
-            {ingestionData.metadata.fullName}
-          </a>
+          {ingestionData.metadata.url ? (
+            <a
+              className="truncate text-sm text-zinc-300 transition hover:text-white"
+              href={ingestionData.metadata.url}
+              rel="noreferrer"
+              target="_blank"
+            >
+              {ingestionData.metadata.fullName}
+            </a>
+          ) : (
+            <p className="truncate text-sm text-zinc-300">
+              {ingestionData.metadata.fullName}
+            </p>
+          )}
         </div>
       </div>
 
@@ -192,44 +256,17 @@ function LessonLayout({
               <h1 className="mt-4 text-4xl font-semibold tracking-[-0.04em] text-white sm:text-5xl">
                 {lesson.title}
               </h1>
-              <div className="mt-5 flex flex-wrap items-center gap-3 text-sm text-zinc-400">
-                <span className="rounded-full border border-white/10 bg-zinc-950/70 px-3 py-1 text-zinc-200">
-                  {ingestionData.metadata.language || "Unknown language"}
-                </span>
-                <span aria-hidden="true" className="text-zinc-600">
-                  ·
-                </span>
-                <span>{ingestionData.metadata.stars.toLocaleString()} stars</span>
-              </div>
-            </section>
-
-            <section className="rounded-[2rem] border border-white/10 bg-white/5 p-8 shadow-[0_0_0_1px_rgba(255,255,255,0.04),0_24px_80px_rgba(15,23,42,0.3)] backdrop-blur-xl">
-              <p className="text-sm font-medium uppercase tracking-[0.24em] text-zinc-500">
-                Explanation
+              <p className="mt-4 max-w-3xl text-base leading-7 text-zinc-300">
+                {lesson.subtitle}
               </p>
-              <div className="mt-5 max-w-[65ch] text-base leading-8 text-zinc-200">
-                {explanationParagraphs.map((paragraph, index) => (
-                  <p className="mb-4 last:mb-0" key={`${index}-${paragraph}`}>
-                    {paragraph}
-                  </p>
-                ))}
+              <div className="mt-5 flex flex-wrap items-center gap-3 text-sm text-zinc-400">
+                <MetadataSummary ingestionData={ingestionData} />
               </div>
             </section>
 
-            <MermaidDiagram chart={lesson.mermaidDiagram} />
-
-            {lesson.codeSnippet ? (
-              <section className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900">
-                <div className="flex items-center justify-end border-b border-zinc-800 px-4 py-3">
-                  <span className="text-xs font-medium uppercase tracking-[0.28em] text-zinc-500">
-                    {lesson.language?.toUpperCase() ?? "CODE"}
-                  </span>
-                </div>
-                <pre className="overflow-x-auto p-5 font-mono text-[13px] leading-6 text-zinc-200">
-                  <code>{lesson.codeSnippet}</code>
-                </pre>
-              </section>
-            ) : null}
+            {lesson.blocks.map((block, index) => (
+              <BlockRenderer block={block} key={`${block.type}-${index}`} />
+            ))}
 
             <section className="rounded-[2rem] border border-indigo-500/20 bg-indigo-500/5 p-8 shadow-[0_0_0_1px_rgba(99,102,241,0.06),0_24px_80px_rgba(15,23,42,0.25)]">
               <p className="text-sm font-medium uppercase tracking-[0.24em] text-indigo-200/85">
