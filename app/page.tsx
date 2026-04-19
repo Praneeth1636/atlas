@@ -21,6 +21,8 @@ export default function Home() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const setIngestionData = useAtlasStore((state) => state.setIngestionData);
+  const setLearningPath = useAtlasStore((state) => state.setLearningPath);
+  const invalidateLessons = useAtlasStore((state) => state.invalidateLessons);
   const [activeTab, setActiveTab] = useState<SourceType>("github");
   const [repoUrl, setRepoUrl] = useState("");
   const [pdfUrl, setPdfUrl] = useState("");
@@ -32,7 +34,9 @@ export default function Home() {
 
   const handleAnalyzeSuccess = (data: IngestionData) => {
     setIngestionData(data);
-    router.push("/learn");
+    setLearningPath(null);
+    invalidateLessons();
+    router.push("/plan");
   };
 
   const submitRepo = async (nextRepoUrl: string) => {

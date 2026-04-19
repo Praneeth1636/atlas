@@ -1,4 +1,5 @@
 export type SourceType = "github" | "pdf";
+export type Depth = "quick" | "solid" | "deep";
 
 export type DiagramBlock = {
   type: "diagram";
@@ -71,6 +72,20 @@ export interface IngestionData {
   metadata: IngestionMetadata;
   readme: string;
   fileTree: IngestionFileTreeEntry[];
+}
+
+export interface LessonSpec {
+  id: string;
+  order: number;
+  title: string;
+  summary: string;
+  focusArea: string;
+}
+
+export interface LearningPath {
+  sourceTitle: string;
+  depth: Depth;
+  lessons: LessonSpec[];
 }
 
 export interface Lesson {

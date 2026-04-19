@@ -3,8 +3,13 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { normalizeMermaidChart } from "@/app/lib/mermaid";
 import { normalizeLesson } from "@/app/lib/normalize";
-import { LESSON_SYSTEM_PROMPT } from "@/app/lib/prompts";
-import type { IngestionData, Lesson } from "@/app/lib/types";
+import { getLessonSystemPrompt } from "@/app/lib/prompts";
+import type {
+  Depth,
+  IngestionData,
+  Lesson,
+  LessonSpec,
+} from "@/app/lib/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -29,11 +34,29 @@ const VALID_CALLOUT_VARIANTS = new Set([
   "warning",
   "key",
 ] as const);
+const DEPTH_BLOCK_RANGES: Record<Depth, { min: number; max: number }> = {
+  quick: { min: 3, max: 4 },
+  solid: { min: 5, max: 7 },
+  deep: { min: 6, max: 8 },
+};
 
-function createFallbackLesson(): Lesson {
+type PathContext = {
+  totalLessons: number;
+  previousTitles: string[];
+};
+
+type LessonRequestPayload = {
+  ingestionData: IngestionData;
+  depth: Depth;
+  lessonSpec: LessonSpec;
+  pathContext?: PathContext;
+};
+
+function createFallbackLesson(lessonSpec?: LessonSpec): Lesson {
   return {
-    title: "Overview",
-    subtitle: "A quick introduction to this source.",
+    title: lessonSpec?.title ?? "Overview",
+    subtitle:
+      lessonSpec?.summary ?? "A quick introduction to this source.",
     blocks: [
       {
         type: "text",
@@ -54,18 +77,130 @@ function createFallbackLesson(): Lesson {
   };
 }
 
-function isMissingIngestionField(body: Partial<IngestionData> | null) {
+function isObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isDepth(value: unknown): value is Depth {
+  return value === "quick" || value === "solid" || value === "deep";
+}
+
+function isValidIngestionData(value: unknown): value is IngestionData {
   return (
-    !body ||
-    (body.sourceType !== "github" && body.sourceType !== "pdf") ||
-    typeof body.sourceRef !== "string" ||
-    !body.metadata ||
-    body.readme === undefined ||
-    !Array.isArray(body.fileTree)
+    isObject(value) &&
+    (value.sourceType === "github" || value.sourceType === "pdf") &&
+    typeof value.sourceRef === "string" &&
+    isObject(value.metadata) &&
+    typeof value.readme === "string" &&
+    Array.isArray(value.fileTree)
   );
 }
 
-function buildUserPrompt({
+function cleanMermaid(raw: string): string {
+  return raw
+    .replace(/(-->|==>|-\.->)\|([^|]+)\|>/g, "$1|$2|")
+    .replace(/\|([^|]*)"([^|]*)\|/g, "|$1$2|")
+    .replace(/\|([^|]+)\|/g, (_match, inside: string) =>
+      `|${inside.replace(/\s+/g, " ").trim()}|`
+    );
+}
+
+function sanitizeLessonSpec(raw: unknown): LessonSpec | null {
+  if (!isObject(raw)) {
+    return null;
+  }
+
+  const title = isNonEmptyString(raw.title) ? raw.title.trim() : null;
+  const summary = isNonEmptyString(raw.summary) ? raw.summary.trim() : null;
+  const focusArea = isNonEmptyString(raw.focusArea)
+    ? raw.focusArea.trim()
+    : null;
+  const order =
+    typeof raw.order === "number" && Number.isInteger(raw.order) && raw.order > 0
+      ? raw.order
+      : null;
+
+  if (!title || !summary || !focusArea || !order) {
+    return null;
+  }
+
+  return {
+    id:
+      isNonEmptyString(raw.id) && /^lesson-\d+$/.test(raw.id.trim())
+        ? raw.id.trim()
+        : `lesson-${order}`,
+    order,
+    title,
+    summary,
+    focusArea,
+  };
+}
+
+function sanitizePathContext(raw: unknown): PathContext | undefined {
+  if (!isObject(raw)) {
+    return undefined;
+  }
+
+  const totalLessons =
+    typeof raw.totalLessons === "number" &&
+    Number.isInteger(raw.totalLessons) &&
+    raw.totalLessons > 0
+      ? raw.totalLessons
+      : null;
+
+  if (!totalLessons) {
+    return undefined;
+  }
+
+  return {
+    totalLessons,
+    previousTitles: Array.isArray(raw.previousTitles)
+      ? raw.previousTitles
+          .filter((title): title is string => isNonEmptyString(title))
+          .map((title) => title.trim())
+      : [],
+  };
+}
+
+function resolveLessonRequest(body: unknown): LessonRequestPayload | null {
+  if (isValidIngestionData(body)) {
+    return {
+      ingestionData: body,
+      depth: "solid",
+      lessonSpec: {
+        id: "lesson-1",
+        order: 1,
+        title: "Overview",
+        summary: "A quick introduction to this source.",
+        focusArea: "orientation",
+      },
+    };
+  }
+
+  if (!isObject(body) || !isValidIngestionData(body.ingestionData)) {
+    return null;
+  }
+
+  return {
+    ingestionData: body.ingestionData,
+    depth: isDepth(body.depth) ? body.depth : "solid",
+    lessonSpec:
+      sanitizeLessonSpec(body.lessonSpec) ?? {
+        id: "lesson-1",
+        order: 1,
+        title: "Overview",
+        summary: "A quick introduction to this source.",
+        focusArea: "orientation",
+      },
+    pathContext: sanitizePathContext(body.pathContext),
+  };
+}
+
+function buildSourceContext({
   sourceType,
   sourceRef,
   metadata,
@@ -80,7 +215,7 @@ Description: ${metadata.description ?? "(none)"}
 Pages: ${metadata.pageCount ?? "(unknown)"}
 
 Extracted text (truncated):
-${readme.slice(0, 8000)}`;
+${readme.slice(0, 7000)}`;
   }
 
   return `Source type: GitHub repository
@@ -88,31 +223,50 @@ Source ref: ${sourceRef}
 Repository: ${metadata.fullName}
 Description: ${metadata.description ?? "(none)"}
 Language: ${metadata.language ?? "(mixed)"}
+Stars: ${metadata.stars}
 
 README (truncated):
-${readme.slice(0, 6000)}
+${readme.slice(0, 5500)}
 
 Top-level file tree:
 ${fileTree
-  .map((file) => `- ${file.type === "dir" ? "[DIR]" : "[FILE]"} ${file.name}`)
+  .slice(0, 18)
+  .map((file) => `- ${file.type === "dir" ? "[DIR]" : "[FILE]"} ${file.path}`)
   .join("\n")}`;
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object";
-}
+function buildLessonUserPrompt({
+  ingestionData,
+  lessonSpec,
+  pathContext,
+}: LessonRequestPayload) {
+  const pathSection = pathContext
+    ? `
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
+Path context:
+This is lesson ${lessonSpec.order} of ${pathContext.totalLessons}.
+Previous lessons covered: ${
+        pathContext.previousTitles.length > 0
+          ? pathContext.previousTitles.join(", ")
+          : "(none)"
+      }.
+Do not re-explain those — reference them as prior knowledge.
+`
+    : `
 
-function cleanMermaid(raw: string): string {
-  return raw
-    .replace(/(-->|==>|-\.->)\|([^|]+)\|>/g, "$1|$2|")
-    .replace(/\|([^|]*)"([^|]*)\|/g, "|$1$2|")
-    .replace(/\|([^|]+)\|/g, (_match, inside: string) =>
-      `|${inside.replace(/\s+/g, " ").trim()}|`
-    );
+Path context:
+This is a standalone lesson. Treat it as the learner's first touchpoint.
+`;
+
+  return `${buildSourceContext(ingestionData)}
+
+Lesson to generate:
+- Title: ${lessonSpec.title}
+- Summary: ${lessonSpec.summary}
+- Focus area: ${lessonSpec.focusArea}
+- Lesson order: ${lessonSpec.order}
+${pathSection}
+Return one complete lesson for this specific slot in the path.`;
 }
 
 function validateBlock(block: unknown) {
@@ -149,17 +303,11 @@ function validateBlock(block: unknown) {
       const headers = block.headers;
       const rows = block.rows;
 
-      if (
-        block.title !== undefined &&
-        typeof block.title !== "string"
-      ) {
+      if (block.title !== undefined && typeof block.title !== "string") {
         return "Table block titles must be strings when provided.";
       }
 
-      if (
-        headers.length === 0 ||
-        headers.some((header) => !isNonEmptyString(header))
-      ) {
+      if (headers.length === 0 || headers.some((header) => !isNonEmptyString(header))) {
         return "Table blocks require non-empty headers.";
       }
 
@@ -203,7 +351,10 @@ function validateBlock(block: unknown) {
   }
 }
 
-function validateLessonShape(value: unknown): { valid: boolean; reason: string } {
+function validateLessonShape(
+  value: unknown,
+  depth: Depth
+): { valid: boolean; reason: string } {
   if (!isObject(value)) {
     return { valid: false, reason: "Lesson must be an object." };
   }
@@ -216,10 +367,16 @@ function validateLessonShape(value: unknown): { valid: boolean; reason: string }
     return { valid: false, reason: "Lesson subtitle is required." };
   }
 
-  if (!Array.isArray(value.blocks) || value.blocks.length < 3 || value.blocks.length > 7) {
+  const blockRange = DEPTH_BLOCK_RANGES[depth];
+
+  if (
+    !Array.isArray(value.blocks) ||
+    value.blocks.length < blockRange.min ||
+    value.blocks.length > blockRange.max
+  ) {
     return {
       valid: false,
-      reason: "Lesson blocks must contain between 3 and 7 items.",
+      reason: `Lesson blocks must contain between ${blockRange.min} and ${blockRange.max} items for ${depth} depth.`,
     };
   }
 
@@ -265,19 +422,53 @@ function validateLessonShape(value: unknown): { valid: boolean; reason: string }
   return { valid: true, reason: "" };
 }
 
-async function requestLessonFromGroq(
-  groq: OpenAI,
-  userPrompt: string,
-  extraSystemMessages: string[] = [],
-  model: string
-) {
-  const response = await groq.chat.completions.create({
+function createAiClient() {
+  const groqApiKey = process.env.GROQ_API_KEY;
+  const openAiApiKey = process.env.OPENAI_API_KEY;
+
+  if (!groqApiKey && !openAiApiKey) {
+    return null;
+  }
+
+  return groqApiKey
+    ? {
+        client: new OpenAI({
+          apiKey: groqApiKey,
+          baseURL: GROQ_BASE_URL,
+        }),
+        model: process.env.GROQ_MODEL ?? DEFAULT_GROQ_MODEL,
+      }
+    : {
+        client: new OpenAI({ apiKey: openAiApiKey }),
+        model: process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL,
+      };
+}
+
+async function requestLessonFromModel({
+  client,
+  model,
+  systemPrompt,
+  userPrompt,
+  depth,
+  extraSystemMessages = [],
+}: {
+  client: OpenAI;
+  model: string;
+  systemPrompt: string;
+  userPrompt: string;
+  depth: Depth;
+  extraSystemMessages?: string[];
+}) {
+  const maxTokens =
+    depth === "quick" ? 2200 : depth === "solid" ? 3600 : 5200;
+
+  const response = await client.chat.completions.create({
     model,
     response_format: { type: "json_object" },
     temperature: 0.7,
-    max_tokens: 2500,
+    max_tokens: maxTokens,
     messages: [
-      { role: "system", content: LESSON_SYSTEM_PROMPT },
+      { role: "system", content: systemPrompt },
       ...extraSystemMessages.map((message) => ({
         role: "system" as const,
         content: message,
@@ -289,28 +480,36 @@ async function requestLessonFromGroq(
   return response.choices[0]?.message?.content;
 }
 
-async function generateLesson(
-  groq: OpenAI,
-  userPrompt: string,
-  model: string
-): Promise<Lesson> {
+async function generateLesson({
+  client,
+  model,
+  payload,
+}: {
+  client: OpenAI;
+  model: string;
+  payload: LessonRequestPayload;
+}): Promise<Lesson> {
+  const userPrompt = buildLessonUserPrompt(payload);
+  const systemPrompt = getLessonSystemPrompt(payload.depth);
   let extraSystemMessages: string[] = [];
   let lastValidationReason = "";
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const raw = await requestLessonFromGroq(
-      groq,
+    const raw = await requestLessonFromModel({
+      client,
+      model,
+      systemPrompt,
       userPrompt,
+      depth: payload.depth,
       extraSystemMessages,
-      model
-    );
+    });
 
     if (!raw) {
       lastValidationReason = "The model returned an empty response.";
 
       if (attempt === 0) {
         extraSystemMessages = [
-          "Your previous response was empty. Return ONLY a valid JSON object matching the required lesson schema with 3 to 7 blocks and at least one valid diagram block.",
+          "Your previous response was empty. Return ONLY a valid JSON object matching the required lesson schema for the requested depth, with valid Mermaid and the correct number of blocks.",
         ];
         continue;
       }
@@ -327,7 +526,7 @@ async function generateLesson(
 
       if (attempt === 0) {
         extraSystemMessages = [
-          "Your previous response was invalid JSON. Return ONLY a valid JSON object matching the required lesson schema with 3 to 7 blocks and at least one valid diagram block.",
+          "Your previous response was invalid JSON. Return ONLY a valid JSON object matching the required lesson schema for the requested depth.",
         ];
         continue;
       }
@@ -336,20 +535,23 @@ async function generateLesson(
       break;
     }
 
-    const validation = validateLessonShape(parsedLesson);
+    const validation = validateLessonShape(parsedLesson, payload.depth);
 
     if (validation.valid) {
       return normalizeLesson(parsedLesson);
     }
 
     lastValidationReason = validation.reason;
-    console.error("[lesson] Invalid lesson response:", validation.reason, parsedLesson);
+    console.error(
+      "[lesson] Invalid lesson response:",
+      validation.reason,
+      parsedLesson
+    );
 
     if (attempt === 0) {
       extraSystemMessages = [
-        `Your previous response did not match the required lesson schema: ${validation.reason} Return ONLY valid JSON matching the schema exactly. The lesson must contain 3 to 7 blocks and at least one diagram block with valid Mermaid syntax.`,
+        `Your previous response did not match the required lesson schema: ${validation.reason} Return ONLY valid JSON matching the schema exactly. Respect the requested depth, keep valid Mermaid syntax, and avoid re-teaching prior lessons.`,
       ];
-      continue;
     }
   }
 
@@ -357,14 +559,14 @@ async function generateLesson(
     console.warn("[lesson] Falling back to safe lesson:", lastValidationReason);
   }
 
-  return createFallbackLesson();
+  return createFallbackLesson(payload.lessonSpec);
 }
 
 export async function POST(request: NextRequest) {
-  let body: Partial<IngestionData> | null = null;
+  let body: unknown;
 
   try {
-    body = (await request.json()) as Partial<IngestionData>;
+    body = await request.json();
   } catch {
     return NextResponse.json(
       { error: "Invalid lesson request" },
@@ -372,17 +574,18 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (isMissingIngestionField(body)) {
+  const payload = resolveLessonRequest(body);
+
+  if (!payload) {
     return NextResponse.json(
       { error: "Missing required ingestion data" },
       { status: 400 }
     );
   }
 
-  const groqApiKey = process.env.GROQ_API_KEY;
-  const openAiApiKey = process.env.OPENAI_API_KEY;
+  const aiClient = createAiClient();
 
-  if (!groqApiKey && !openAiApiKey) {
+  if (!aiClient) {
     console.error("[lesson] GROQ_API_KEY or OPENAI_API_KEY not set");
 
     return NextResponse.json(
@@ -391,23 +594,16 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const groq = groqApiKey
-    ? new OpenAI({
-        apiKey: groqApiKey,
-        baseURL: GROQ_BASE_URL,
-      })
-    : new OpenAI({ apiKey: openAiApiKey });
-  const model = groqApiKey
-    ? process.env.GROQ_MODEL ?? DEFAULT_GROQ_MODEL
-    : process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL;
-  const userPrompt = buildUserPrompt(body as IngestionData);
-
   try {
-    const lesson = await generateLesson(groq, userPrompt, model);
+    const lesson = await generateLesson({
+      client: aiClient.client,
+      model: aiClient.model,
+      payload,
+    });
 
     return NextResponse.json(lesson);
   } catch (error) {
-    console.error("[lesson] Groq error:", error);
+    console.error("[lesson] Model error:", error);
 
     return NextResponse.json(
       { error: "Failed to generate lesson. Please try again." },
