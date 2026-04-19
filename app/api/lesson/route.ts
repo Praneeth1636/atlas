@@ -57,27 +57,211 @@ type LessonRequestPayload = {
   pathContext?: PathContext;
 };
 
-function createFallbackLesson(lessonSpec?: LessonSpec): Lesson {
+function normalizeWhitespace(text: string) {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function truncateWords(text: string, maxWords: number) {
+  const words = normalizeWhitespace(text).split(" ").filter(Boolean);
+
+  if (words.length <= maxWords) {
+    return words.join(" ");
+  }
+
+  return `${words.slice(0, maxWords).join(" ")}…`;
+}
+
+function sanitizeMermaidLabel(text: string) {
+  return normalizeWhitespace(text)
+    .replace(/["'`()[\]{}:;/\\]/g, "")
+    .replace(/[^\w -]/g, "")
+    .slice(0, 28)
+    .trim() || "Concept";
+}
+
+function deriveSourceTitle(ingestionData: IngestionData) {
+  const title = normalizeWhitespace(ingestionData.metadata.fullName);
+
+  if (title && title.toLowerCase() !== "document.pdf") {
+    return title;
+  }
+
+  const firstMeaningfulLine = ingestionData.readme
+    .split("\n")
+    .map((line) => normalizeWhitespace(line))
+    .find((line) => line.length > 6 && !line.includes("@"));
+
+  return firstMeaningfulLine || title || "this source";
+}
+
+function extractSourceParagraphs(readme: string) {
+  const normalized = readme
+    .split(/\n{2,}/)
+    .map((paragraph) => normalizeWhitespace(paragraph))
+    .filter((paragraph) => paragraph.length > 40);
+
+  return normalized.slice(0, 6);
+}
+
+function createLessonDiagram(
+  sourceTitle: string,
+  lessonSpec: LessonSpec,
+  label: string
+) {
   return {
-    title: lessonSpec?.title ?? "Overview",
-    subtitle:
-      lessonSpec?.summary ?? "A quick introduction to this source.",
+    type: "diagram" as const,
+    diagramType: "flowchart" as const,
+    title: label,
+    mermaid: `graph LR
+  A[Prior Context]
+  B[${sanitizeMermaidLabel(truncateWords(lessonSpec.focusArea, 3))}]
+  C[${sanitizeMermaidLabel(truncateWords(lessonSpec.title, 4))}]
+  D[${sanitizeMermaidLabel(truncateWords(sourceTitle, 4))}]
+  A --> B
+  B --> C
+  C --> D`,
+  };
+}
+
+function createLessonTable(
+  ingestionData: IngestionData,
+  lessonSpec: LessonSpec
+) {
+  if (ingestionData.sourceType === "pdf") {
+    return {
+      type: "table" as const,
+      title: "Reading anchors",
+      headers: ["Signal", "Value", "Why it matters"],
+      rows: [
+        ["Source", deriveSourceTitle(ingestionData), "Keeps the lesson grounded"],
+        [
+          "Pages",
+          String(ingestionData.metadata.pageCount ?? "Unknown"),
+          "Sets the document scope",
+        ],
+        ["Focus", lessonSpec.focusArea, "Frames the current lesson"],
+        ["Goal", truncateWords(lessonSpec.summary, 8), "Defines the takeaway"],
+      ],
+    };
+  }
+
+  const keyFiles = ingestionData.fileTree
+    .slice(0, 3)
+    .map((file) => file.name)
+    .join(", ") || "README.md";
+
+  return {
+    type: "table" as const,
+    title: "Implementation anchors",
+    headers: ["Signal", "Value", "Why it matters"],
+    rows: [
+      [
+        "Language",
+        ingestionData.metadata.language ?? "Mixed",
+        "Hints at the implementation style",
+      ],
+      [
+        "Stars",
+        ingestionData.metadata.stars.toLocaleString(),
+        "Shows project adoption",
+      ],
+      ["Key files", keyFiles, "Good next reading targets"],
+      ["Focus", lessonSpec.focusArea, "Frames the current lesson"],
+    ],
+  };
+}
+
+function createLessonCallout(lessonSpec: LessonSpec) {
+  const variant: "info" | "tip" | "warning" | "key" =
+    lessonSpec.focusArea === "tradeoffs" || lessonSpec.focusArea === "evaluation"
+      ? "warning"
+      : lessonSpec.focusArea === "implementation"
+        ? "tip"
+        : lessonSpec.focusArea === "theory"
+          ? "info"
+          : "key";
+
+  return {
+    type: "callout" as const,
+    variant,
+    title: "Why this lesson matters",
+    body: `${lessonSpec.summary} Keep the focus on ${lessonSpec.focusArea} rather than trying to relearn the whole source at once.`,
+  };
+}
+
+function createLessonCodeBlock(ingestionData: IngestionData) {
+  const keyFiles = ingestionData.fileTree
+    .slice(0, 4)
+    .map((file) => `${file.path}`)
+    .join("\n");
+
+  return {
+    type: "code" as const,
+    language: "text",
+    caption: "Good files to inspect next",
+    code: keyFiles || "README.md",
+  };
+}
+
+function createFallbackLesson(payload: LessonRequestPayload): Lesson {
+  const sourceTitle = deriveSourceTitle(payload.ingestionData);
+  const sourceParagraphs = extractSourceParagraphs(payload.ingestionData.readme);
+  const pathLead =
+    payload.pathContext && payload.pathContext.previousTitles.length > 0
+      ? `Earlier lessons covered ${payload.pathContext.previousTitles.join(", ")}. `
+      : payload.lessonSpec.order === 1
+        ? "This is the opening lesson in the path. "
+        : "";
+  const introText = `${pathLead}${payload.lessonSpec.summary} ${payload.ingestionData.metadata.description ? `${sourceTitle} is described as ${truncateWords(payload.ingestionData.metadata.description, 18)}.` : `The source is ${sourceTitle}.`} Focus on ${payload.lessonSpec.focusArea} as the organizing lens for this lesson.`;
+  const detailText = sourceParagraphs[0]
+    ? `A useful anchor from the source is: ${truncateWords(sourceParagraphs[0], payload.depth === "quick" ? 36 : payload.depth === "solid" ? 70 : 110)}`
+    : `Use this lesson to connect ${payload.lessonSpec.title.toLowerCase()} back to the source's actual structure, terminology, and design choices.`;
+  const closingText = sourceParagraphs[1]
+    ? `As you continue, keep this second anchor in view: ${truncateWords(sourceParagraphs[1], payload.depth === "quick" ? 30 : payload.depth === "solid" ? 60 : 90)}`
+    : `The next useful move is to compare this lesson's focus area with the rest of the path so you can see how the source builds up its full argument or system behavior.`;
+
+  const blocks: Lesson["blocks"] = [
+    {
+      type: "text",
+      body: introText,
+    },
+    createLessonDiagram(sourceTitle, payload.lessonSpec, "Concept map"),
+  ];
+
+  if (payload.depth !== "quick") {
+    blocks.push({
+      type: "text",
+      body: detailText,
+    });
+  }
+
+  if (payload.depth !== "quick") {
+    blocks.push(createLessonTable(payload.ingestionData, payload.lessonSpec));
+  }
+
+  blocks.push(createLessonCallout(payload.lessonSpec));
+
+  if (payload.depth === "deep") {
+    blocks.push(createLessonDiagram(sourceTitle, payload.lessonSpec, "Lesson flow"));
+
+    if (payload.ingestionData.sourceType === "github") {
+      blocks.push(createLessonCodeBlock(payload.ingestionData));
+    }
+  }
+
+  return {
+    title: payload.lessonSpec.title,
+    subtitle: payload.lessonSpec.summary,
     blocks: [
+      ...blocks,
       {
         type: "text",
-        body: "We had trouble generating a detailed lesson. Here's a minimal overview — please try again.",
-      },
-      {
-        type: "diagram",
-        diagramType: "flowchart",
-        title: "Concept flow",
-        mermaid:
-          "graph TD\n  A[Source] --> B[Analysis]\n  B --> C[Key Concept]\n  C --> D[Applied Understanding]",
+        body: closingText,
       },
     ],
     quiz: {
-      question: "What is the main idea of this source?",
-      expectedConcept: "Core concept identification",
+      question: `What is the key idea behind ${payload.lessonSpec.title}?`,
+      expectedConcept: payload.lessonSpec.focusArea,
     },
   };
 }
@@ -583,7 +767,7 @@ async function generateLesson({
     console.warn("[lesson] Falling back to safe lesson:", lastValidationReason);
   }
 
-  return createFallbackLesson(payload.lessonSpec);
+  return createFallbackLesson(payload);
 }
 
 export async function POST(request: NextRequest) {

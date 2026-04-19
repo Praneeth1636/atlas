@@ -27,6 +27,8 @@ type OutlineRequestBody = {
   depth?: Depth;
 };
 
+type LessonTemplate = Pick<LessonSpec, "title" | "summary" | "focusArea">;
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
 }
@@ -37,6 +39,25 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isDepth(value: unknown): value is Depth {
   return value === "quick" || value === "solid" || value === "deep";
+}
+
+function normalizeWhitespace(text: string) {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function deriveSourceTitle(ingestionData: IngestionData) {
+  const title = normalizeWhitespace(ingestionData.metadata.fullName);
+
+  if (title && title.toLowerCase() !== "document.pdf") {
+    return title;
+  }
+
+  const firstMeaningfulLine = ingestionData.readme
+    .split("\n")
+    .map((line) => normalizeWhitespace(line))
+    .find((line) => line.length > 6 && !line.includes("@"));
+
+  return firstMeaningfulLine || title || "this source";
 }
 
 function isValidIngestionData(value: unknown): value is IngestionData {
@@ -54,43 +75,217 @@ function createFallbackOutline(
   ingestionData: IngestionData,
   depth: Depth
 ): LearningPath {
+  const sourceTitle = deriveSourceTitle(ingestionData);
+  const shortTitle = sourceTitle.replace(/^.*\//, "");
+  const templatesBySource: Record<Depth, LessonTemplate[]> =
+    ingestionData.sourceType === "github"
+      ? {
+          quick: [
+            {
+              title: `What ${shortTitle} is trying to do`,
+              summary:
+                "Get oriented around the repository, the problem it tackles, and the big-picture workflow before diving into details.",
+              focusArea: "orientation",
+            },
+            {
+              title: `How ${shortTitle} is structured`,
+              summary:
+                "Map the main files, components, and runtime flow so the project stops feeling like a black box.",
+              focusArea: "architecture",
+            },
+            {
+              title: `The core mechanism inside ${shortTitle}`,
+              summary:
+                "Focus on the central model, algorithm, or data path that makes the repository work.",
+              focusArea: "core-algorithm",
+            },
+            {
+              title: `Using and adapting ${shortTitle}`,
+              summary:
+                "Close with the practical tradeoffs, configuration levers, and where the project is most useful in practice.",
+              focusArea: "applications",
+            },
+          ],
+          solid: [
+            {
+              title: `What ${shortTitle} is trying to do`,
+              summary:
+                "Get oriented around the repository, the problem it tackles, and the high-level workflow before diving deeper.",
+              focusArea: "orientation",
+            },
+            {
+              title: `How ${shortTitle} is structured`,
+              summary:
+                "Map the key files, components, and execution flow so the architecture becomes concrete.",
+              focusArea: "architecture",
+            },
+            {
+              title: `The core mechanism inside ${shortTitle}`,
+              summary:
+                "Focus on the main model, algorithm, or data transformation pipeline that drives the repository's results.",
+              focusArea: "core-algorithm",
+            },
+            {
+              title: `Training, tuning, and evaluation`,
+              summary:
+                "Look at the knobs that change behavior, the metrics that matter, and how the project is typically validated.",
+              focusArea: "evaluation",
+            },
+            {
+              title: `Where ${shortTitle} works best`,
+              summary:
+                "Synthesize the tradeoffs, constraints, and practical use cases so the learner can reason about real deployment choices.",
+              focusArea: "tradeoffs",
+            },
+          ],
+          deep: [
+            {
+              title: `What ${shortTitle} is optimizing for`,
+              summary:
+                "Frame the repository's objective, assumptions, and the context needed to read the implementation critically.",
+              focusArea: "orientation",
+            },
+            {
+              title: `How the codebase is partitioned`,
+              summary:
+                "Break down the architecture into modules, responsibilities, and data handoffs so the reading path is explicit.",
+              focusArea: "architecture",
+            },
+            {
+              title: `The core mechanism inside ${shortTitle}`,
+              summary:
+                "Dive into the main model or algorithm with enough specificity to support implementation-level reasoning.",
+              focusArea: "core-algorithm",
+            },
+            {
+              title: `Implementation details that matter`,
+              summary:
+                "Look at the concrete files, configuration surfaces, and code paths that have the biggest effect on behavior.",
+              focusArea: "implementation",
+            },
+            {
+              title: `Failure modes and evaluation tradeoffs`,
+              summary:
+                "Study the places where the system can underperform, how those risks are measured, and what tradeoffs emerge in practice.",
+              focusArea: "evaluation",
+            },
+            {
+              title: `Extending ${shortTitle} in the real world`,
+              summary:
+                "Close by connecting the design to real applications, extension points, and the questions an advanced reader should investigate next.",
+              focusArea: "applications",
+            },
+          ],
+        }
+      : {
+          quick: [
+            {
+              title: `The big idea in ${shortTitle}`,
+              summary:
+                "Start with the core claim of the document and why it mattered enough to read in the first place.",
+              focusArea: "theory",
+            },
+            {
+              title: `How the main mechanism works`,
+              summary:
+                "Focus on the central conceptual machinery so the learner can explain the paper's actual contribution.",
+              focusArea: "core-algorithm",
+            },
+            {
+              title: `What evidence supports it`,
+              summary:
+                "Highlight the results, experiments, or arguments that make the document persuasive.",
+              focusArea: "evaluation",
+            },
+            {
+              title: `Why this document still matters`,
+              summary:
+                "Close with impact, applications, and the practical lens a reader should carry forward.",
+              focusArea: "applications",
+            },
+          ],
+          solid: [
+            {
+              title: `The big idea in ${shortTitle}`,
+              summary:
+                "Orient the learner around the document's thesis, motivation, and what problem it is trying to solve.",
+              focusArea: "theory",
+            },
+            {
+              title: `The architecture or mechanism at the center`,
+              summary:
+                "Map the moving pieces so the learner understands how the core method actually operates.",
+              focusArea: "architecture",
+            },
+            {
+              title: `Why the mechanism works`,
+              summary:
+                "Go deeper on the reasoning, representations, or algorithms that make the document's contribution meaningful.",
+              focusArea: "core-algorithm",
+            },
+            {
+              title: `What the results prove`,
+              summary:
+                "Look at experiments, comparisons, and benchmarks to understand how the authors support their claims.",
+              focusArea: "evaluation",
+            },
+            {
+              title: `Open questions and practical impact`,
+              summary:
+                "Close by connecting the document to downstream applications, limitations, and the next questions a serious reader should ask.",
+              focusArea: "applications",
+            },
+          ],
+          deep: [
+            {
+              title: `The problem setting behind ${shortTitle}`,
+              summary:
+                "Establish the theoretical context, prior limitations, and the assumptions the document is trying to overturn or refine.",
+              focusArea: "theory",
+            },
+            {
+              title: `The architecture at the center`,
+              summary:
+                "Map the document's internal structure so the learner can track how the major components coordinate.",
+              focusArea: "architecture",
+            },
+            {
+              title: `The mathematical or algorithmic mechanism`,
+              summary:
+                "Examine the specific mechanism in enough detail to support technical explanation and implementation-level reasoning.",
+              focusArea: "core-algorithm",
+            },
+            {
+              title: `Implementation and experimental choices`,
+              summary:
+                "Focus on the concrete settings, ablations, and methodological details that make the work credible or fragile.",
+              focusArea: "implementation",
+            },
+            {
+              title: `Tradeoffs, limits, and failure modes`,
+              summary:
+                "Study where the document's argument is strongest, where it is weakest, and what caveats an expert reader should keep in mind.",
+              focusArea: "tradeoffs",
+            },
+            {
+              title: `What this changed afterwards`,
+              summary:
+                "Synthesize the lasting impact, downstream uses, and the advanced follow-up questions this document invites.",
+              focusArea: "applications",
+            },
+          ],
+        };
+
+  const lessons = templatesBySource[depth].map((template, index) => ({
+    id: `lesson-${index + 1}`,
+    order: index + 1,
+    ...template,
+  }));
+
   return {
-    sourceTitle: ingestionData.metadata.fullName,
+    sourceTitle,
     depth,
-    lessons: [
-      {
-        id: "lesson-1",
-        order: 1,
-        title: "Overview",
-        summary:
-          "Get oriented around the source, what it is trying to do, and why it matters before diving into specifics.",
-        focusArea: "orientation",
-      },
-      {
-        id: "lesson-2",
-        order: 2,
-        title: "Architecture",
-        summary:
-          "Map the major components so the learner can see how the core pieces fit together.",
-        focusArea: "architecture",
-      },
-      {
-        id: "lesson-3",
-        order: 3,
-        title: "Key Mechanisms",
-        summary:
-          "Focus on the central mechanisms, algorithms, or ideas that make this source distinctive.",
-        focusArea: "core-algorithm",
-      },
-      {
-        id: "lesson-4",
-        order: 4,
-        title: "Applications",
-        summary:
-          "Connect the ideas back to practical use, implications, and what a learner should do next.",
-        focusArea: "applications",
-      },
-    ],
+    lessons,
   };
 }
 
