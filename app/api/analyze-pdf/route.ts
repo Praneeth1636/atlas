@@ -1,13 +1,10 @@
 import { createRequire } from "node:module";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
 
 const MAX_PDF_SIZE_BYTES = 15 * 1024 * 1024;
-let isPdfWorkerConfigured = false;
 const require = createRequire(import.meta.url);
 
 type ParsedPdf = {
@@ -18,6 +15,8 @@ type ParsedPdf = {
   numpages: number;
   text: string;
 };
+
+type PdfParseFn = (data: Buffer) => Promise<ParsedPdf>;
 
 function isValidPdfUrl(value: string) {
   return /^https?:\/\//.test(value);
@@ -58,37 +57,14 @@ function createPdfResponse({
 }
 
 async function parsePdfBuffer(buffer: Buffer): Promise<ParsedPdf> {
-  const { PDFParse } = require("pdf-parse") as typeof import("pdf-parse");
+  const pdfParse = require("pdf-parse/lib/pdf-parse.js") as PdfParseFn;
+  const parsedPdf = await pdfParse(buffer);
 
-  if (!isPdfWorkerConfigured) {
-    const workerPath = join(
-      process.cwd(),
-      "node_modules",
-      "pdfjs-dist",
-      "legacy",
-      "build",
-      "pdf.worker.mjs"
-    );
-    PDFParse.setWorker(pathToFileURL(workerPath).href);
-    isPdfWorkerConfigured = true;
-  }
-
-  const parser = new PDFParse({ data: Array.from(buffer) });
-
-  try {
-    const [infoResult, textResult] = await Promise.all([
-      parser.getInfo(),
-      parser.getText(),
-    ]);
-
-    return {
-      info: infoResult.info,
-      numpages: infoResult.total,
-      text: textResult.text,
-    };
-  } finally {
-    await parser.destroy();
-  }
+  return {
+    info: parsedPdf.info,
+    numpages: parsedPdf.numpages,
+    text: parsedPdf.text,
+  };
 }
 
 async function fetchPdfBuffer(pdfUrl: string) {
