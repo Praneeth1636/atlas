@@ -1,3 +1,7 @@
+import {
+  inferDiagramType,
+  normalizeMermaidChart,
+} from "@/app/lib/mermaid";
 import type { Lesson, LessonBlock } from "@/app/lib/types";
 
 const VALID_DIAGRAM_TYPES = new Set([
@@ -18,18 +22,6 @@ const VALID_CALLOUT_VARIANTS = new Set([
   "warning",
   "key",
 ] as const);
-
-const MERMAID_PREFIXES = [
-  "graph ",
-  "flowchart ",
-  "sequenceDiagram",
-  "classDiagram",
-  "gantt",
-  "timeline",
-  "stateDiagram",
-  "mindmap",
-  "erDiagram",
-];
 
 function createFallbackLesson(): Lesson {
   return {
@@ -67,32 +59,6 @@ function normalizeOptionalString(value: unknown) {
   return isNonEmptyString(value) ? value.trim() : undefined;
 }
 
-function countChar(text: string, char: string) {
-  return text.split(char).length - 1;
-}
-
-function hasBalancedBrackets(chart: string) {
-  return (
-    countChar(chart, "[") === countChar(chart, "]") &&
-    countChar(chart, "(") === countChar(chart, ")") &&
-    countChar(chart, "{") === countChar(chart, "}")
-  );
-}
-
-function isValidMermaid(chart: unknown): chart is string {
-  if (!isNonEmptyString(chart)) {
-    return false;
-  }
-
-  const trimmedChart = chart.trim();
-
-  if (!MERMAID_PREFIXES.some((prefix) => trimmedChart.startsWith(prefix))) {
-    return false;
-  }
-
-  return hasBalancedBrackets(trimmedChart);
-}
-
 function sanitizeBlock(raw: unknown): LessonBlock | null {
   if (!isObject(raw) || typeof raw.type !== "string") {
     return null;
@@ -109,27 +75,17 @@ function sanitizeBlock(raw: unknown): LessonBlock | null {
         body: raw.body.trim(),
       };
     case "diagram":
-      if (
-        !VALID_DIAGRAM_TYPES.has(raw.diagramType as never) ||
-        !isValidMermaid(raw.mermaid)
-      ) {
+      const mermaid = normalizeMermaidChart(raw.mermaid);
+
+      if (!VALID_DIAGRAM_TYPES.has(raw.diagramType as never) || !mermaid) {
         return null;
       }
 
       return {
         type: "diagram",
-        diagramType: raw.diagramType as
-          | "flowchart"
-          | "sequence"
-          | "class"
-          | "gantt"
-          | "timeline"
-          | "mindmap"
-          | "state"
-          | "er"
-          | "graph",
+        diagramType: inferDiagramType(mermaid),
         title: normalizeOptionalString(raw.title),
-        mermaid: raw.mermaid.trim(),
+        mermaid,
       };
     case "table":
       if (!Array.isArray(raw.headers) || !Array.isArray(raw.rows)) {
@@ -237,10 +193,13 @@ export function normalizeLesson(raw: unknown): Lesson {
 
     blocks.push({
       type: "diagram",
-      diagramType: "flowchart",
-      mermaid: isValidMermaid(raw.mermaidDiagram)
-        ? raw.mermaidDiagram.trim()
-        : "graph TD\n  A[Source] --> B[Key Idea]",
+      diagramType: inferDiagramType(
+        normalizeMermaidChart(raw.mermaidDiagram) ??
+          "graph TD\n  A[Source] --> B[Key Idea]"
+      ),
+      mermaid:
+        normalizeMermaidChart(raw.mermaidDiagram) ??
+        "graph TD\n  A[Source] --> B[Key Idea]",
     });
 
     if (isNonEmptyString(raw.codeSnippet)) {

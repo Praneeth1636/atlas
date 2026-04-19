@@ -1,6 +1,8 @@
 import OpenAI from "openai";
 import { NextRequest, NextResponse } from "next/server";
 
+import { normalizeMermaidChart } from "@/app/lib/mermaid";
+import { normalizeLesson } from "@/app/lib/normalize";
 import { LESSON_SYSTEM_PROMPT } from "@/app/lib/prompts";
 import type { IngestionData, Lesson } from "@/app/lib/types";
 
@@ -27,17 +29,6 @@ const VALID_CALLOUT_VARIANTS = new Set([
   "warning",
   "key",
 ] as const);
-const MERMAID_PREFIXES = [
-  "graph ",
-  "flowchart ",
-  "sequenceDiagram",
-  "classDiagram",
-  "gantt",
-  "timeline",
-  "stateDiagram",
-  "mindmap",
-  "erDiagram",
-];
 
 function createFallbackLesson(): Lesson {
   return {
@@ -115,32 +106,6 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function countChar(text: string, char: string) {
-  return text.split(char).length - 1;
-}
-
-function hasBalancedBrackets(chart: string) {
-  return (
-    countChar(chart, "[") === countChar(chart, "]") &&
-    countChar(chart, "(") === countChar(chart, ")") &&
-    countChar(chart, "{") === countChar(chart, "}")
-  );
-}
-
-function isValidMermaid(chart: unknown) {
-  if (!isNonEmptyString(chart)) {
-    return false;
-  }
-
-  const trimmedChart = chart.trim();
-
-  if (!MERMAID_PREFIXES.some((prefix) => trimmedChart.startsWith(prefix))) {
-    return false;
-  }
-
-  return hasBalancedBrackets(trimmedChart);
-}
-
 function validateBlock(block: unknown) {
   if (!isObject(block) || typeof block.type !== "string") {
     return "Each block must be an object with a valid type.";
@@ -160,7 +125,7 @@ function validateBlock(block: unknown) {
         return "Diagram block titles must be strings when provided.";
       }
 
-      return isValidMermaid(block.mermaid)
+      return normalizeMermaidChart(block.mermaid)
         ? null
         : "Diagram blocks require valid Mermaid syntax.";
     case "table":
@@ -361,7 +326,7 @@ async function generateLesson(
     const validation = validateLessonShape(parsedLesson);
 
     if (validation.valid) {
-      return parsedLesson as Lesson;
+      return normalizeLesson(parsedLesson);
     }
 
     lastValidationReason = validation.reason;

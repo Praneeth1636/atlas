@@ -36,6 +36,8 @@ Rules for Mermaid diagrams:
 - Must be valid Mermaid syntax matching the declared diagramType.
 - Use simple alphanumeric node IDs: A, B, C, A1, B2, etc.
 - Keep labels under 30 characters. Do NOT use parentheses ( ), brackets [ ], braces { }, single quotes, or double quotes INSIDE labels — use hyphens or plain text.
+- For labeled flowchart edges, use exactly: A -->|label| B. Never write |label|> B.
+- For sequence diagrams, do NOT quote participant aliases. Use: participant Encoder as Encoder.
 - No styling directives, no classDef, no click handlers, no nested subgraphs.
 - Keep each diagram under 15 nodes.
 

@@ -2,6 +2,11 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import {
+  createFallbackMermaidFromChart,
+  normalizeMermaidChart,
+} from "@/app/lib/mermaid";
+
 interface MermaidDiagramProps {
   chart: string;
 }
@@ -24,6 +29,14 @@ export default function MermaidDiagram({ chart }: MermaidDiagramProps) {
 
       try {
         const mermaid = (await import("mermaid")).default;
+        const renderCandidates = [
+          chart,
+          normalizeMermaidChart(chart),
+          createFallbackMermaidFromChart(chart),
+        ].filter(
+          (candidate, index, candidates): candidate is string =>
+            Boolean(candidate) && candidates.indexOf(candidate) === index
+        );
 
         if (!hasInitialized.current) {
           mermaid.initialize({
@@ -35,13 +48,31 @@ export default function MermaidDiagram({ chart }: MermaidDiagramProps) {
           hasInitialized.current = true;
         }
 
-        const { svg: nextSvg } = await mermaid.render(id, chart);
+        let nextSvg: string | null = null;
+
+        for (let index = 0; index < renderCandidates.length; index += 1) {
+          try {
+            const renderedDiagram = await mermaid.render(
+              `${id}-${index}`,
+              renderCandidates[index]
+            );
+
+            nextSvg = renderedDiagram.svg;
+            break;
+          } catch (error) {
+            console.error("[mermaid] Failed to render diagram", error);
+          }
+        }
+
+        if (!nextSvg) {
+          throw new Error("Unable to render Mermaid diagram");
+        }
 
         if (isActive) {
           setSvg(nextSvg);
         }
       } catch (error) {
-        console.error("[mermaid] Failed to render diagram", error);
+        console.error("[mermaid] Exhausted diagram fallbacks", error);
 
         if (isActive) {
           setHasError(true);
