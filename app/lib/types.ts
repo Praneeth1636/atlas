@@ -25,8 +25,10 @@ export interface Lesson {
   mermaidDiagram: string;
   codeSnippet: string | null;
   language: string | null;
-  quiz: {
-    question: string;
-    expectedConcept: string;
-  };
+  quiz: LessonQuiz;
+}
+
+export interface LessonQuiz {
+  question: string;
+  expectedConcept: string;
 }
