@@ -495,14 +495,27 @@ async function generateLesson({
   let lastValidationReason = "";
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const raw = await requestLessonFromModel({
-      client,
-      model,
-      systemPrompt,
-      userPrompt,
-      depth: payload.depth,
-      extraSystemMessages,
-    });
+    let raw: string | null | undefined;
+
+    try {
+      raw = await requestLessonFromModel({
+        client,
+        model,
+        systemPrompt,
+        userPrompt,
+        depth: payload.depth,
+        extraSystemMessages,
+      });
+    } catch (error) {
+      lastValidationReason = "The model request failed.";
+      console.error("[lesson] Model request failed:", error);
+
+      if (attempt === 0) {
+        continue;
+      }
+
+      break;
+    }
 
     if (!raw) {
       lastValidationReason = "The model returned an empty response.";

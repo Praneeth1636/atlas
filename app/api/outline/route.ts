@@ -248,12 +248,25 @@ async function generateOutline({
   let lastReason = "";
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const raw = await requestOutline({
-      client,
-      model,
-      userPrompt,
-      extraSystemMessages,
-    });
+    let raw: string | null | undefined;
+
+    try {
+      raw = await requestOutline({
+        client,
+        model,
+        userPrompt,
+        extraSystemMessages,
+      });
+    } catch (error) {
+      lastReason = "The model request failed.";
+      console.error("[outline] Model request failed:", error);
+
+      if (attempt === 0) {
+        continue;
+      }
+
+      break;
+    }
 
     if (!raw) {
       lastReason = "The model returned an empty response.";
