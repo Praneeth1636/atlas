@@ -34,6 +34,11 @@ const VALID_CALLOUT_VARIANTS = new Set([
   "warning",
   "key",
 ] as const);
+type AiProvider = {
+  client: OpenAI;
+  model: string;
+  label: "groq" | "openai";
+};
 const DEPTH_BLOCK_RANGES: Record<Depth, { min: number; max: number }> = {
   quick: { min: 3, max: 4 },
   solid: { min: 5, max: 7 },
@@ -422,26 +427,31 @@ function validateLessonShape(
   return { valid: true, reason: "" };
 }
 
-function createAiClient() {
+function createAiProviders(): AiProvider[] {
   const groqApiKey = process.env.GROQ_API_KEY;
   const openAiApiKey = process.env.OPENAI_API_KEY;
+  const providers: AiProvider[] = [];
 
-  if (!groqApiKey && !openAiApiKey) {
-    return null;
+  if (groqApiKey) {
+    providers.push({
+      label: "groq",
+      client: new OpenAI({
+        apiKey: groqApiKey,
+        baseURL: GROQ_BASE_URL,
+      }),
+      model: process.env.GROQ_MODEL ?? DEFAULT_GROQ_MODEL,
+    });
   }
 
-  return groqApiKey
-    ? {
-        client: new OpenAI({
-          apiKey: groqApiKey,
-          baseURL: GROQ_BASE_URL,
-        }),
-        model: process.env.GROQ_MODEL ?? DEFAULT_GROQ_MODEL,
-      }
-    : {
-        client: new OpenAI({ apiKey: openAiApiKey }),
-        model: process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL,
-      };
+  if (openAiApiKey) {
+    providers.push({
+      label: "openai",
+      client: new OpenAI({ apiKey: openAiApiKey }),
+      model: process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL,
+    });
+  }
+
+  return providers;
 }
 
 async function requestLessonFromModel({
@@ -481,90 +491,91 @@ async function requestLessonFromModel({
 }
 
 async function generateLesson({
-  client,
-  model,
+  providers,
   payload,
 }: {
-  client: OpenAI;
-  model: string;
+  providers: AiProvider[];
   payload: LessonRequestPayload;
 }): Promise<Lesson> {
   const userPrompt = buildLessonUserPrompt(payload);
   const systemPrompt = getLessonSystemPrompt(payload.depth);
-  let extraSystemMessages: string[] = [];
   let lastValidationReason = "";
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    let raw: string | null | undefined;
+  for (const provider of providers) {
+    let extraSystemMessages: string[] = [];
 
-    try {
-      raw = await requestLessonFromModel({
-        client,
-        model,
-        systemPrompt,
-        userPrompt,
-        depth: payload.depth,
-        extraSystemMessages,
-      });
-    } catch (error) {
-      lastValidationReason = "The model request failed.";
-      console.error("[lesson] Model request failed:", error);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let raw: string | null | undefined;
 
-      if (attempt === 0) {
-        continue;
+      try {
+        raw = await requestLessonFromModel({
+          client: provider.client,
+          model: provider.model,
+          systemPrompt,
+          userPrompt,
+          depth: payload.depth,
+          extraSystemMessages,
+        });
+      } catch (error) {
+        lastValidationReason = `The ${provider.label} model request failed.`;
+        console.error(`[lesson] ${provider.label} request failed:`, error);
+
+        if (attempt === 0) {
+          continue;
+        }
+
+        break;
       }
 
-      break;
-    }
+      if (!raw) {
+        lastValidationReason = `The ${provider.label} model returned an empty response.`;
 
-    if (!raw) {
-      lastValidationReason = "The model returned an empty response.";
+        if (attempt === 0) {
+          extraSystemMessages = [
+            "Your previous response was empty. Return ONLY a valid JSON object matching the required lesson schema for the requested depth, with valid Mermaid and the correct number of blocks.",
+          ];
+          continue;
+        }
+
+        break;
+      }
+
+      let parsedLesson: unknown;
+
+      try {
+        parsedLesson = JSON.parse(raw);
+      } catch (error) {
+        lastValidationReason = `The ${provider.label} model returned invalid JSON.`;
+
+        if (attempt === 0) {
+          extraSystemMessages = [
+            "Your previous response was invalid JSON. Return ONLY a valid JSON object matching the required lesson schema for the requested depth.",
+          ];
+          continue;
+        }
+
+        console.error("[lesson] Invalid JSON response:", error);
+        break;
+      }
+
+      const validation = validateLessonShape(parsedLesson, payload.depth);
+
+      if (validation.valid) {
+        return normalizeLesson(parsedLesson);
+      }
+
+      lastValidationReason = validation.reason;
+      console.error(
+        "[lesson] Invalid lesson response:",
+        validation.reason,
+        parsedLesson
+      );
 
       if (attempt === 0) {
         extraSystemMessages = [
-          "Your previous response was empty. Return ONLY a valid JSON object matching the required lesson schema for the requested depth, with valid Mermaid and the correct number of blocks.",
+          `Your previous response did not match the required lesson schema: ${validation.reason} Return ONLY valid JSON matching the schema exactly. Respect the requested depth, keep valid Mermaid syntax, and avoid re-teaching prior lessons.`,
         ];
-        continue;
       }
-
-      break;
-    }
-
-    let parsedLesson: unknown;
-
-    try {
-      parsedLesson = JSON.parse(raw);
-    } catch (error) {
-      lastValidationReason = "The model returned invalid JSON.";
-
-      if (attempt === 0) {
-        extraSystemMessages = [
-          "Your previous response was invalid JSON. Return ONLY a valid JSON object matching the required lesson schema for the requested depth.",
-        ];
-        continue;
-      }
-
-      console.error("[lesson] Invalid JSON response:", error);
-      break;
-    }
-
-    const validation = validateLessonShape(parsedLesson, payload.depth);
-
-    if (validation.valid) {
-      return normalizeLesson(parsedLesson);
-    }
-
-    lastValidationReason = validation.reason;
-    console.error(
-      "[lesson] Invalid lesson response:",
-      validation.reason,
-      parsedLesson
-    );
-
-    if (attempt === 0) {
-      extraSystemMessages = [
-        `Your previous response did not match the required lesson schema: ${validation.reason} Return ONLY valid JSON matching the schema exactly. Respect the requested depth, keep valid Mermaid syntax, and avoid re-teaching prior lessons.`,
-      ];
     }
   }
 
@@ -596,9 +607,9 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const aiClient = createAiClient();
+  const aiProviders = createAiProviders();
 
-  if (!aiClient) {
+  if (aiProviders.length === 0) {
     console.error("[lesson] GROQ_API_KEY or OPENAI_API_KEY not set");
 
     return NextResponse.json(
@@ -609,8 +620,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const lesson = await generateLesson({
-      client: aiClient.client,
-      model: aiClient.model,
+      providers: aiProviders,
       payload,
     });
 

@@ -16,6 +16,12 @@ const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
 const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
 const DEFAULT_OPENAI_MODEL = "gpt-4o";
 
+type AiProvider = {
+  client: OpenAI;
+  model: string;
+  label: "groq" | "openai";
+};
+
 type OutlineRequestBody = {
   ingestionData?: IngestionData;
   depth?: Depth;
@@ -181,26 +187,31 @@ function sanitizeLearningPath(
   };
 }
 
-function createAiClient() {
+function createAiProviders(): AiProvider[] {
   const groqApiKey = process.env.GROQ_API_KEY;
   const openAiApiKey = process.env.OPENAI_API_KEY;
+  const providers: AiProvider[] = [];
 
-  if (!groqApiKey && !openAiApiKey) {
-    return null;
+  if (groqApiKey) {
+    providers.push({
+      label: "groq",
+      client: new OpenAI({
+        apiKey: groqApiKey,
+        baseURL: GROQ_BASE_URL,
+      }),
+      model: process.env.GROQ_MODEL ?? DEFAULT_GROQ_MODEL,
+    });
   }
 
-  return groqApiKey
-    ? {
-        client: new OpenAI({
-          apiKey: groqApiKey,
-          baseURL: GROQ_BASE_URL,
-        }),
-        model: process.env.GROQ_MODEL ?? DEFAULT_GROQ_MODEL,
-      }
-    : {
-        client: new OpenAI({ apiKey: openAiApiKey }),
-        model: process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL,
-      };
+  if (openAiApiKey) {
+    providers.push({
+      label: "openai",
+      client: new OpenAI({ apiKey: openAiApiKey }),
+      model: process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL,
+    });
+  }
+
+  return providers;
 }
 
 async function requestOutline({
@@ -233,85 +244,86 @@ async function requestOutline({
 }
 
 async function generateOutline({
-  client,
-  model,
+  providers,
   ingestionData,
   depth,
 }: {
-  client: OpenAI;
-  model: string;
+  providers: AiProvider[];
   ingestionData: IngestionData;
   depth: Depth;
 }): Promise<LearningPath> {
   const userPrompt = buildOutlineUserPrompt(ingestionData, depth);
-  let extraSystemMessages: string[] = [];
   let lastReason = "";
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    let raw: string | null | undefined;
+  for (const provider of providers) {
+    let extraSystemMessages: string[] = [];
 
-    try {
-      raw = await requestOutline({
-        client,
-        model,
-        userPrompt,
-        extraSystemMessages,
-      });
-    } catch (error) {
-      lastReason = "The model request failed.";
-      console.error("[outline] Model request failed:", error);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let raw: string | null | undefined;
 
-      if (attempt === 0) {
-        continue;
+      try {
+        raw = await requestOutline({
+          client: provider.client,
+          model: provider.model,
+          userPrompt,
+          extraSystemMessages,
+        });
+      } catch (error) {
+        lastReason = `The ${provider.label} model request failed.`;
+        console.error(`[outline] ${provider.label} request failed:`, error);
+
+        if (attempt === 0) {
+          continue;
+        }
+
+        break;
       }
 
-      break;
-    }
+      if (!raw) {
+        lastReason = `The ${provider.label} model returned an empty response.`;
 
-    if (!raw) {
-      lastReason = "The model returned an empty response.";
+        if (attempt === 0) {
+          extraSystemMessages = [
+            "Your previous response was empty. Return ONLY valid JSON with 4 to 6 lessons in a contiguous learning path.",
+          ];
+          continue;
+        }
+
+        break;
+      }
+
+      let parsed: unknown;
+
+      try {
+        parsed = JSON.parse(raw);
+      } catch (error) {
+        lastReason = `The ${provider.label} model returned invalid JSON.`;
+
+        if (attempt === 0) {
+          extraSystemMessages = [
+            "Your previous response was invalid JSON. Return ONLY valid JSON for the outline schema.",
+          ];
+          continue;
+        }
+
+        console.error("[outline] Invalid JSON response:", error);
+        break;
+      }
+
+      const outline = sanitizeLearningPath(parsed, ingestionData, depth);
+
+      if (outline) {
+        return outline;
+      }
+
+      lastReason = `The ${provider.label} model returned an invalid outline shape.`;
+      console.error("[outline] Invalid outline response:", parsed);
 
       if (attempt === 0) {
         extraSystemMessages = [
-          "Your previous response was empty. Return ONLY valid JSON with 4 to 6 lessons in a contiguous learning path.",
+          "Your previous response did not match the outline schema. Return 4 to 6 lessons with unique concrete titles, 1-indexed contiguous order, and valid lesson ids like lesson-1.",
         ];
-        continue;
       }
-
-      break;
-    }
-
-    let parsed: unknown;
-
-    try {
-      parsed = JSON.parse(raw);
-    } catch (error) {
-      lastReason = "The model returned invalid JSON.";
-
-      if (attempt === 0) {
-        extraSystemMessages = [
-          "Your previous response was invalid JSON. Return ONLY valid JSON for the outline schema.",
-        ];
-        continue;
-      }
-
-      console.error("[outline] Invalid JSON response:", error);
-      break;
-    }
-
-    const outline = sanitizeLearningPath(parsed, ingestionData, depth);
-
-    if (outline) {
-      return outline;
-    }
-
-    lastReason = "The model returned an invalid outline shape.";
-    console.error("[outline] Invalid outline response:", parsed);
-
-    if (attempt === 0) {
-      extraSystemMessages = [
-        "Your previous response did not match the outline schema. Return 4 to 6 lessons with unique concrete titles, 1-indexed contiguous order, and valid lesson ids like lesson-1.",
-      ];
     }
   }
 
@@ -341,9 +353,9 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const aiClient = createAiClient();
+  const aiProviders = createAiProviders();
 
-  if (!aiClient) {
+  if (aiProviders.length === 0) {
     console.error("[outline] GROQ_API_KEY or OPENAI_API_KEY not set");
 
     return NextResponse.json(
@@ -354,8 +366,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const outline = await generateOutline({
-      client: aiClient.client,
-      model: aiClient.model,
+      providers: aiProviders,
       ingestionData: body.ingestionData,
       depth: body.depth,
     });
