@@ -86,10 +86,22 @@ function deriveSourceTitle(ingestionData: IngestionData) {
     return title;
   }
 
+  const ignoredPhrases = [
+    "provided proper attribution",
+    "google hereby grants permission",
+    "journalistic or scholarly works",
+  ];
   const firstMeaningfulLine = ingestionData.readme
     .split("\n")
     .map((line) => normalizeWhitespace(line))
-    .find((line) => line.length > 6 && !line.includes("@"));
+    .find(
+      (line) =>
+        line.length > 6 &&
+        !line.includes("@") &&
+        !ignoredPhrases.some((phrase) =>
+          line.toLowerCase().includes(phrase)
+        )
+    );
 
   return firstMeaningfulLine || title || "this source";
 }
