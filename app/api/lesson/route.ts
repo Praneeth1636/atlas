@@ -106,6 +106,15 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function cleanMermaid(raw: string): string {
+  return raw
+    .replace(/(-->|==>|-\.->)\|([^|]+)\|>/g, "$1|$2|")
+    .replace(/\|([^|]*)"([^|]*)\|/g, "|$1$2|")
+    .replace(/\|([^|]+)\|/g, (_match, inside: string) =>
+      `|${inside.replace(/\s+/g, " ").trim()}|`
+    );
+}
+
 function validateBlock(block: unknown) {
   if (!isObject(block) || typeof block.type !== "string") {
     return "Each block must be an object with a valid type.";
@@ -123,6 +132,10 @@ function validateBlock(block: unknown) {
 
       if (block.title !== undefined && typeof block.title !== "string") {
         return "Diagram block titles must be strings when provided.";
+      }
+
+      if (typeof block.mermaid === "string") {
+        block.mermaid = cleanMermaid(block.mermaid);
       }
 
       return normalizeMermaidChart(block.mermaid)
